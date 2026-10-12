@@ -2574,12 +2574,12 @@ public static partial class Gen5SpirvTranslator
                 case "DsOrderedCount":
                     return TryEmitGlobalDataShareCounter(instruction, control, out error);
                 case "DsWriteB32":
-                    EmitExecConditional(() => StoreGlobalDataShareWord(GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes), GetRawSource(instruction, 1)));
+                    EmitExecConditional(() => StoreGlobalDataShareWord(GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes), GetRawSource(instruction, 1)));
                     return true;
                 case "DsWriteB64":
                     EmitExecConditional(() =>
                     {
-                        var index = GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
+                        var index = GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
                         StoreGlobalDataShareWord(index, GetRawSource(instruction, 1));
                         StoreGlobalDataShareWord(IAdd(index, UInt(1)), GetRawSource(instruction, 2));
                     });
@@ -2591,12 +2591,12 @@ public static partial class Gen5SpirvTranslator
                     EmitExecConditional(() =>
                     {
                         var address = GetRawSource(instruction, 0);
-                        StoreGlobalDataShareWord(GlobalDataShareIndex(address, control.Offset0 * sizeof(uint)), GetRawSource(instruction, 1));
-                        StoreGlobalDataShareWord(GlobalDataShareIndex(address, control.Offset1 * sizeof(uint)), GetRawSource(instruction, 2));
+                        StoreGlobalDataShareWord(GlobalDataShareSegmentIndex(address, control.Offset0 * sizeof(uint)), GetRawSource(instruction, 1));
+                        StoreGlobalDataShareWord(GlobalDataShareSegmentIndex(address, control.Offset1 * sizeof(uint)), GetRawSource(instruction, 2));
                     });
                     return true;
                 case "DsReadB32":
-                    StoreV(instruction.Destinations[0].Value, LoadBlockWord(_globalDataShare, GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes)));
+                    StoreV(instruction.Destinations[0].Value, LoadBlockWord(_globalDataShare, GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes)));
                     return true;
                 case "DsReadI8":
                 {
@@ -2604,7 +2604,7 @@ public static partial class Gen5SpirvTranslator
                     var byteAddress = control.SingleOffsetBytes == 0
                         ? address
                         : IAdd(address, UInt(control.SingleOffsetBytes));
-                    var word = LoadBlockWord(_globalDataShare, GlobalDataShareIndex(address, control.SingleOffsetBytes));
+                    var word = LoadBlockWord(_globalDataShare, GlobalDataShareSegmentIndex(address, control.SingleOffsetBytes));
                     var shift = ShiftLeftLogical(BitwiseAnd(byteAddress, UInt(3)), UInt(3));
                     var packed = ShiftRightLogical(word, shift);
                     var signedByte = _module.AddInstruction(
@@ -2618,7 +2618,7 @@ public static partial class Gen5SpirvTranslator
                 }
                 case "DsReadB64":
                 {
-                    var index = GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
+                    var index = GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
                     StoreV(instruction.Destinations[0].Value, LoadBlockWord(_globalDataShare, index));
                     StoreV(instruction.Destinations[1].Value, LoadBlockWord(_globalDataShare, IAdd(index, UInt(1))));
                     return true;
@@ -2628,8 +2628,8 @@ public static partial class Gen5SpirvTranslator
                 case "DsRead2B32":
                 {
                     var address = GetRawSource(instruction, 0);
-                    StoreV(instruction.Destinations[0].Value, LoadBlockWord(_globalDataShare, GlobalDataShareIndex(address, control.Offset0 * sizeof(uint))));
-                    StoreV(instruction.Destinations[1].Value, LoadBlockWord(_globalDataShare, GlobalDataShareIndex(address, control.Offset1 * sizeof(uint))));
+                    StoreV(instruction.Destinations[0].Value, LoadBlockWord(_globalDataShare, GlobalDataShareSegmentIndex(address, control.Offset0 * sizeof(uint))));
+                    StoreV(instruction.Destinations[1].Value, LoadBlockWord(_globalDataShare, GlobalDataShareSegmentIndex(address, control.Offset1 * sizeof(uint))));
                     return true;
                 }
                 default:
@@ -2664,7 +2664,7 @@ public static partial class Gen5SpirvTranslator
                     var byteOffset = pairOffset * offsetStride + (uint)(component % 2) * sizeof(uint);
                     var value = GetRawSource(instruction, component + 1);
                     if (control.Gds)
-                        StoreGlobalDataShareWord(GlobalDataShareIndex(address, byteOffset), value);
+                        StoreGlobalDataShareWord(GlobalDataShareSegmentIndex(address, byteOffset), value);
                     else
                         StoreLds(LdsPointer(address, byteOffset), value);
                 }
@@ -2691,7 +2691,7 @@ public static partial class Gen5SpirvTranslator
                     var pairOffset = component < 2 ? control.Offset0 : control.Offset1;
                     var byteOffset = pairOffset * sizeof(ulong) + (uint)(component % 2) * sizeof(uint);
                     values[component] = control.Gds
-                        ? LoadBlockWord(_globalDataShare, GlobalDataShareIndex(address, byteOffset))
+                        ? LoadBlockWord(_globalDataShare, GlobalDataShareSegmentIndex(address, byteOffset))
                         : Load(_uintType, LdsPointer(address, byteOffset));
                 }
                 for (var component = 0; component < values.Length; component++)
@@ -2699,6 +2699,10 @@ public static partial class Gen5SpirvTranslator
             });
             return true;
         }
+
+        // GDS addresses are relative to the segment base in M0[31:16], as for append and consume.
+        private uint GlobalDataShareSegmentIndex(uint address, uint offsetBytes) =>
+            GlobalDataShareIndex(IAdd(address, ShiftRightLogical(LoadS(M0ScalarRegister), UInt(16))), offsetBytes);
 
         private uint GlobalDataShareIndex(uint address, uint offsetBytes) =>
             ShiftRightLogical(offsetBytes == 0 ? address : IAdd(address, UInt(offsetBytes)), UInt(2));
@@ -2717,7 +2721,7 @@ public static partial class Gen5SpirvTranslator
                     return false;
                 }
 
-                var floatIndex = GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
+                var floatIndex = GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
                 EmitExecConditional(() =>
                 {
                     EmitConditional(IsBlockWordInRange(_globalDataShare, floatIndex), () =>
@@ -2755,7 +2759,7 @@ public static partial class Gen5SpirvTranslator
                 return false;
             }
 
-            var index = GlobalDataShareIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
+            var index = GlobalDataShareSegmentIndex(GetRawSource(instruction, 0), control.SingleOffsetBytes);
             EmitExecConditional(() =>
             {
                 EmitConditional(IsBlockWordInRange(_globalDataShare, index), () =>
