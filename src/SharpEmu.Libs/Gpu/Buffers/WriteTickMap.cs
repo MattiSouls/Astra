@@ -23,6 +23,24 @@ public sealed class WriteTickMap
 
         var end = begin + size;
         var index = FirstEndingAfter(begin);
+        if (index < _entries.Count)
+        {
+            var current = _entries[index];
+            // Repeated writes within one tick leave this interval unchanged.
+            if (current.Begin <= begin && current.End >= end && current.Tick == tick)
+            {
+                return;
+            }
+
+            // Updating an existing interval need not move every later entry.
+            if (current.Begin == begin && current.End == end)
+            {
+                _entries[index] = current with { Tick = tick };
+                MergeAround(index);
+                return;
+            }
+        }
+
         var removed = 0;
         while (index + removed < _entries.Count && _entries[index + removed].Begin < end)
         {
@@ -61,14 +79,19 @@ public sealed class WriteTickMap
             _entries.Insert(insert, rightPiece);
         }
 
-        if (middle + 1 < _entries.Count)
+        MergeAround(middle);
+    }
+
+    private void MergeAround(int index)
+    {
+        if (index + 1 < _entries.Count)
         {
-            _ = TryMerge(middle, middle + 1);
+            _ = TryMerge(index, index + 1);
         }
 
-        if (middle > 0)
+        if (index > 0)
         {
-            _ = TryMerge(middle - 1, middle);
+            _ = TryMerge(index - 1, index);
         }
     }
 
