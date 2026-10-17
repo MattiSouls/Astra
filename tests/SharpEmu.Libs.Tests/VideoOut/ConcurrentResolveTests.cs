@@ -11,6 +11,24 @@ namespace SharpEmu.Libs.Tests.VideoOut;
 public sealed class ConcurrentResolveTests
 {
     [Fact]
+    public void ReusedProofsStartWithNewVersionsAndNoPriorOwnershipAnswers()
+    {
+        var assumptions = new ConcurrentAssumptions(1, 2);
+        assumptions.Record(ConcurrentQuery.CleanWord, 0x1000, 4, true);
+        var capacity = assumptions.Answers.Capacity;
+        assumptions.Begin(3, 4);
+
+        Assert.Equal(3, assumptions.BufferVersion);
+        Assert.Equal(4, assumptions.WritebackEpoch);
+        Assert.Empty(assumptions.Answers);
+        Assert.False(assumptions.ReadsImageOwnership);
+        Assert.Equal(capacity, assumptions.Answers.Capacity);
+        assumptions.Record(ConcurrentQuery.DirtyBytes, 0x2000, 4, false);
+        Assert.Single(assumptions.Answers);
+        Assert.Equal(0x2000UL, assumptions.Answers[0].Address);
+    }
+
+    [Fact]
     public void ConsecutiveAndRepeatedReadsKeepOneProofPerQuery()
     {
         var assumptions = new ConcurrentAssumptions(1, 2);

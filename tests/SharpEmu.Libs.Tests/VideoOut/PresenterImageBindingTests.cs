@@ -46,6 +46,52 @@ public sealed class PresenterImageBindingTests : IClassFixture<HeadlessVulkanFix
     public PresenterImageBindingTests(HeadlessVulkanFixture fixture) => _vulkan = fixture.Vulkan;
 
     [Fact]
+    public void ConcurrentProofPool_DoesNotReuseProofsUntilTheirConsumerReleasesThem()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var presenter = new PresenterUnderTest(_vulkan);
+        presenter.Run(() =>
+        {
+            var host = (IConcurrentResolveHost)presenter.Instance;
+            host.BeginConcurrentResolve();
+            var first = (VulkanVideoPresenter.ConcurrentAssumptions)host.EndConcurrentResolve();
+            first.Record(VulkanVideoPresenter.ConcurrentQuery.CleanWord, 0x1000, 4, false);
+            host.BeginConcurrentResolve();
+            var second = host.EndConcurrentResolve();
+            Assert.NotSame(first, second);
+            Assert.Single(first.Answers);
+            host.ReleaseAssumptions(first);
+            host.BeginConcurrentResolve();
+            var reused = (VulkanVideoPresenter.ConcurrentAssumptions)host.EndConcurrentResolve();
+            Assert.Same(first, reused);
+            Assert.Empty(reused.Answers);
+            Assert.False(reused.ReadsImageOwnership);
+            host.ReleaseAssumptions(reused);
+            host.ReleaseAssumptions(second);
+        });
+    }
+
+    [Fact]
+    public void ConcurrentProofPool_DropsOversizedAnswerStorage()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var presenter = new PresenterUnderTest(_vulkan);
+        presenter.Run(() =>
+        {
+            var host = (IConcurrentResolveHost)presenter.Instance;
+            host.BeginConcurrentResolve();
+            var first = (VulkanVideoPresenter.ConcurrentAssumptions)host.EndConcurrentResolve();
+            first.Answers.Capacity = 1 << 17;
+            host.ReleaseAssumptions(first);
+            host.BeginConcurrentResolve();
+            var reused = (VulkanVideoPresenter.ConcurrentAssumptions)host.EndConcurrentResolve();
+            Assert.Same(first, reused);
+            Assert.Equal(0, reused.Answers.Capacity);
+            host.ReleaseAssumptions(reused);
+        });
+    }
+
+    [Fact]
     public void SamplerClassesFollowCurrentViewsAndClearPreviousResults()
     {
         var info = new ShaderResourceInfo

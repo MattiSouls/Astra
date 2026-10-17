@@ -18,10 +18,18 @@ internal static unsafe partial class VulkanVideoPresenter
 
     internal sealed class ConcurrentAssumptions(long bufferVersion, long writebackEpoch)
     {
-        public readonly long BufferVersion = bufferVersion;
-        public readonly long WritebackEpoch = writebackEpoch;
-        public readonly List<(ConcurrentQuery Query, ulong Address, ulong Size, bool Answer)> Answers = new();
+        public long BufferVersion = bufferVersion;
+        public long WritebackEpoch = writebackEpoch;
+        public List<(ConcurrentQuery Query, ulong Address, ulong Size, bool Answer)> Answers = new();
         public bool ReadsImageOwnership;
+
+        public void Begin(long nextBufferVersion, long nextWritebackEpoch)
+        {
+            BufferVersion = nextBufferVersion;
+            WritebackEpoch = nextWritebackEpoch;
+            ReadsImageOwnership = false;
+            Answers.Clear();
+        }
 
         public void Record(ConcurrentQuery query, ulong address, ulong size, bool answer)
         {
@@ -59,8 +67,30 @@ internal static unsafe partial class VulkanVideoPresenter
         [ThreadStatic]
         private static ConcurrentAssumptions? _concurrentAssumptions;
 
-        void IConcurrentResolveHost.BeginConcurrentResolve() =>
-            _concurrentAssumptions = new ConcurrentAssumptions(_bufferCache.GpuModifiedVersion, GpuWritebackEpoch.Value);
+        private const int MaxSpareAssumptions = 16;
+        private const int MaxRetainedAnswers = 1 << 16;
+        private readonly Stack<ConcurrentAssumptions> _spareAssumptions = new();
+
+        void IConcurrentResolveHost.BeginConcurrentResolve()
+        {
+            ConcurrentAssumptions? assumptions = null;
+            lock (_spareAssumptions) _spareAssumptions.TryPop(out assumptions);
+
+            assumptions ??= new ConcurrentAssumptions(0, 0);
+            assumptions.Begin(_bufferCache.GpuModifiedVersion, GpuWritebackEpoch.Value);
+            _concurrentAssumptions = assumptions;
+        }
+
+        void IConcurrentResolveHost.ReleaseAssumptions(object assumptionsObject)
+        {
+            var assumptions = (ConcurrentAssumptions)assumptionsObject;
+            if (assumptions.Answers.Capacity > MaxRetainedAnswers) assumptions.Answers = new();
+            assumptions.Answers.Clear();
+            lock (_spareAssumptions)
+            {
+                if (_spareAssumptions.Count < MaxSpareAssumptions) _spareAssumptions.Push(assumptions);
+            }
+        }
 
         object IConcurrentResolveHost.EndConcurrentResolve()
         {

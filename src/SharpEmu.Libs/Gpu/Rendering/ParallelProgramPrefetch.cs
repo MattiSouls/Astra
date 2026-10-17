@@ -159,7 +159,21 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
         Current = null;
         WaitFor(job);
         using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchValidation);
-        if (job.State != 1 || !job.Inputs.Equals(inputs) || !_concurrent.IsStillCurrent(job.Assumptions!))
+        bool taken;
+        try
+        {
+            taken = job.State == 1 && job.Inputs.Equals(inputs) && _concurrent.IsStillCurrent(job.Assumptions!);
+        }
+        finally
+        {
+            if (job.Assumptions is { } assumptions)
+            {
+                job.Assumptions = null;
+                _concurrent.ReleaseAssumptions(assumptions);
+            }
+        }
+
+        if (!taken)
         {
             return false;
         }

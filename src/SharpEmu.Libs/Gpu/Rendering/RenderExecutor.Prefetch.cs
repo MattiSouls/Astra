@@ -61,6 +61,11 @@ public interface IConcurrentResolveHost
 
     // On the render thread.
     bool IsStillCurrent(object assumptions);
+
+    // Once the draw takes or rejects the result, no reader retains these proofs.
+    void ReleaseAssumptions(object assumptions)
+    {
+    }
 }
 
 // Program resolutions computed ahead of their draws. A draw takes one only when it was resolved
