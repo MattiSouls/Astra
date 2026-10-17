@@ -104,6 +104,75 @@ public sealed class WriteTickMapTests
         Assert.Equal(7UL, map.MaxTick(0x200, 0x100));
     }
 
+    [Fact]
+    public void PartialOverwritesKeepTheTailWhenTheIntervalCountGrowsAndShrinks()
+    {
+        var map = new WriteTickMap();
+        for (ulong index = 0; index < 128; index++) map.Assign(index * 32, 16, index + 1);
+        map.Assign(4, 8, 1000);
+        Assert.Equal(130, map.Count);
+        Assert.Equal(1UL, map.MaxTick(0, 4));
+        Assert.Equal(1000UL, map.MaxTick(4, 8));
+        Assert.Equal(1UL, map.MaxTick(12, 4));
+
+        map.Assign(4, 40, 2000);
+        Assert.Equal(129, map.Count);
+        Assert.Equal(2000UL, map.MaxTick(4, 40));
+        Assert.Equal(2UL, map.MaxTick(44, 4));
+        map.Assign(0, 80, 3);
+        Assert.Equal(126, map.Count);
+        for (ulong index = 3; index < 128; index++)
+            Assert.Equal(index + 1, map.MaxTick(index * 32, 16));
+    }
+
+    [Theory]
+    [InlineData(7411)]
+    [InlineData(8329)]
+    public void SparseHighAddressesAndSmallOverwritesMatchPerByteReference(int seed)
+    {
+        const ulong start = ulong.MaxValue - 4096;
+        var map = new WriteTickMap();
+        var ticks = new ulong[1024];
+        var written = new bool[ticks.Length];
+        var random = new System.Random(seed);
+        ulong floor = 0;
+        for (var step = 0; step < 7000; step++)
+        {
+            if (step % 127 == 0)
+            {
+                var below = (ulong)random.Next(32);
+                map.Prune(below);
+                for (var index = 0; index < ticks.Length; index++)
+                {
+                    if (!written[index] || ticks[index] >= below) continue;
+                    floor = Math.Max(floor, ticks[index]);
+                    written[index] = false;
+                }
+            }
+            else
+            {
+                var begin = random.Next(ticks.Length);
+                var size = random.Next(Math.Min(step % 53 == 0 ? 160 : 17, ticks.Length - begin) + 1);
+                var tick = (ulong)random.Next(32);
+                map.Assign(start + (ulong)begin, (ulong)size, tick);
+                Array.Fill(ticks, tick, begin, size);
+                Array.Fill(written, true, begin, size);
+            }
+
+            var count = 0;
+            for (var index = 0; index < ticks.Length; index++)
+                if (written[index] && (index == 0 || !written[index - 1] || ticks[index] != ticks[index - 1])) count++;
+            Assert.Equal(count, map.Count);
+            Assert.Equal(floor, map.Floor);
+            var queryBegin = random.Next(ticks.Length);
+            var querySize = random.Next(ticks.Length - queryBegin + 1);
+            var expected = floor;
+            for (var index = queryBegin; index < queryBegin + querySize; index++)
+                if (written[index]) expected = Math.Max(expected, ticks[index]);
+            Assert.Equal(expected, map.MaxTick(start + (ulong)queryBegin, (ulong)querySize));
+        }
+    }
+
     [Theory]
     [InlineData(1234)]
     [InlineData(5678)]

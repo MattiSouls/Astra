@@ -1,6 +1,8 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using System.Runtime.InteropServices;
+
 namespace SharpEmu.Libs.Gpu.Buffers;
 
 public sealed class WriteTickMap
@@ -62,24 +64,63 @@ public sealed class WriteTickMap
             {
                 right = last with { Begin = end };
             }
-
-            _entries.RemoveRange(index, removed);
         }
 
-        var insert = index;
-        if (left is { } leftPiece)
+        ReplaceRange(index, removed, left, new Entry(begin, end, tick), right);
+    }
+
+    private void ReplaceRange(int index, int removed, Entry? left, Entry middle, Entry? right)
+    {
+        // Merge before moving the tail: removing and inserting each piece separately
+        // repeatedly shifts every later interval, even when the final count is unchanged.
+        if (left is { } leftPiece && leftPiece.Tick == middle.Tick)
         {
-            _entries.Insert(insert++, leftPiece);
+            middle = middle with { Begin = leftPiece.Begin };
+            left = null;
         }
 
-        _entries.Insert(insert, new Entry(begin, end, tick));
-        var middle = insert++;
-        if (right is { } rightPiece)
+        if (right is { } rightPiece && rightPiece.Tick == middle.Tick)
         {
-            _entries.Insert(insert, rightPiece);
+            middle = middle with { End = rightPiece.End };
+            right = null;
         }
 
-        MergeAround(middle);
+        if (left is null && index > 0)
+        {
+            var previous = _entries[index - 1];
+            if (previous.End == middle.Begin && previous.Tick == middle.Tick)
+            {
+                middle = middle with { Begin = previous.Begin };
+                index--;
+                removed++;
+            }
+        }
+
+        if (right is null && index + removed < _entries.Count)
+        {
+            var next = _entries[index + removed];
+            if (next.Begin == middle.End && next.Tick == middle.Tick)
+            {
+                middle = middle with { End = next.End };
+                removed++;
+            }
+        }
+
+        var replacements = 1 + (left.HasValue ? 1 : 0) + (right.HasValue ? 1 : 0);
+        var oldCount = _entries.Count;
+        var newCount = oldCount - removed + replacements;
+        if (newCount > oldCount) CollectionsMarshal.SetCount(_entries, newCount);
+        var entries = CollectionsMarshal.AsSpan(_entries);
+        if (replacements != removed)
+        {
+            var tail = index + removed;
+            entries.Slice(tail, oldCount - tail).CopyTo(entries.Slice(index + replacements));
+        }
+
+        if (left is { } before) entries[index++] = before;
+        entries[index++] = middle;
+        if (right is { } after) entries[index] = after;
+        if (newCount < oldCount) CollectionsMarshal.SetCount(_entries, newCount);
     }
 
     private void MergeAround(int index)
