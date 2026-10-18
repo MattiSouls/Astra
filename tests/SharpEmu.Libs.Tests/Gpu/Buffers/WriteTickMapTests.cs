@@ -219,4 +219,68 @@ public sealed class WriteTickMapTests
             Assert.Equal(expected, map.MaxTick((ulong)queryBegin, (ulong)querySize));
         }
     }
+
+    [Fact]
+    public void FragmentedIntervalsRemainOrderedAcrossBlockSplicesAndPruning()
+    {
+        const int addressSpaceSize = 4096;
+        const ulong addressBase = 0x10000;
+        var map = new WriteTickMap();
+        var ticks = new ulong[addressSpaceSize];
+        var written = new bool[addressSpaceSize];
+        ulong floor = 0;
+
+        void Assign(int begin, int size, ulong tick)
+        {
+            map.Assign(addressBase + (ulong)begin, (ulong)size, tick);
+            Array.Fill(ticks, tick, begin, size);
+            Array.Fill(written, true, begin, size);
+        }
+
+        void AssertMatchesReference()
+        {
+            var expectedCount = 0;
+            for (var index = 0; index < addressSpaceSize; index++)
+            {
+                if (written[index] && (index == 0 || !written[index - 1] || ticks[index] != ticks[index - 1]))
+                    expectedCount++;
+            }
+
+            Assert.Equal(expectedCount, map.Count);
+            Assert.Equal(floor, map.Floor);
+            for (var begin = 0; begin < addressSpaceSize; begin += 37)
+            {
+                var size = Math.Min(43, addressSpaceSize - begin);
+                var expected = floor;
+                for (var index = begin; index < begin + size; index++)
+                    if (written[index]) expected = Math.Max(expected, ticks[index]);
+                Assert.Equal(expected, map.MaxTick(addressBase + (ulong)begin, (ulong)size));
+            }
+        }
+
+        for (var index = 0; index < 400; index++)
+            Assign(index * 8, 4, (ulong)index + 1);
+        AssertMatchesReference();
+
+        // This replaces intervals across several blocks and preserves partial edge intervals.
+        Assign(12 * 8 + 2, (380 * 8 + 2) - (12 * 8 + 2), 10_000);
+        AssertMatchesReference();
+
+        map.Prune(10_000);
+        for (var index = 0; index < addressSpaceSize; index++)
+        {
+            if (!written[index] || ticks[index] >= 10_000) continue;
+            floor = Math.Max(floor, ticks[index]);
+            written[index] = false;
+        }
+        AssertMatchesReference();
+
+        // Re-fragment the surviving range, then overwrite through multiple block boundaries again.
+        for (var index = 0; index < 260; index++)
+            Assign(index * 12, 5, (ulong)index + 20_000);
+        AssertMatchesReference();
+
+        Assign(140 * 12 + 1, (220 * 12 + 4) - (140 * 12 + 1), 40_000);
+        AssertMatchesReference();
+    }
 }
