@@ -221,6 +221,38 @@ public sealed class WriteTickMapTests
     }
 
     [Fact]
+    public void RepeatedSplitsMergesAndPrunesReuseTheMapsBlocks()
+    {
+        const ulong addressBase = 0x10000;
+        var map = new WriteTickMap();
+        ulong tick = 0;
+
+        // Counts after each phase; asserted outside the measured rounds, since asserting allocates.
+        Span<int> counts = stackalloc int[3];
+        void Cycle(Span<int> counts)
+        {
+            // Fragments that split into several blocks, one write that collapses them, then a prune
+            // that empties the map.
+            for (var index = 0; index < 1000; index++)
+                map.Assign(addressBase + (ulong)index * 8, 4, ++tick);
+            counts[0] = map.Count;
+            map.Assign(addressBase, 1000 * 8, ++tick);
+            counts[1] = map.Count;
+            map.Prune(tick + 1);
+            counts[2] = map.Count;
+        }
+
+        Cycle(counts);
+        Assert.Equal([1000, 1, 0], counts.ToArray());
+        Assert.Equal(tick, map.Floor);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var round = 0; round < 20; round++) Cycle(counts);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.Equal([1000, 1, 0], counts.ToArray());
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
     public void FragmentedIntervalsRemainOrderedAcrossBlockSplicesAndPruning()
     {
         const int addressSpaceSize = 4096;

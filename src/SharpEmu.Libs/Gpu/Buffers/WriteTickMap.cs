@@ -30,7 +30,12 @@ public sealed class WriteTickMap
     {
         private const int BlockCapacity = 128;
         private const int InitialBlockCapacity = 16;
+        // Blocks a merge, prune or splice drops are kept for the next split or new block: a map
+        // that is pruned and refilled every few frames would otherwise allocate and regrow all of
+        // its blocks' arrays each time. Spares only ever come from this map's own blocks, so they
+        // never hold more than the map did at its largest.
         private readonly List<Block> _blocks = [];
+        private Stack<Block>? _spareBlocks;
         private int _count;
         private ulong _floor;
 
@@ -158,7 +163,12 @@ public sealed class WriteTickMap
                     }
                 }
 
-                if (writeEntry == 0) continue;
+                if (writeEntry == 0)
+                {
+                    ReturnBlock(block);
+                    continue;
+                }
+
                 block.Count = writeEntry;
                 _blocks[writeBlock++] = block;
                 keptEntries += writeEntry;
@@ -249,7 +259,7 @@ public sealed class WriteTickMap
             if (_blocks.Count == 0)
             {
                 if (replacements.IsEmpty) return;
-                var first = new Block();
+                var first = RentBlock();
                 first.Write(replacements);
                 _blocks.Add(first);
                 _count = replacements.Length;
@@ -303,6 +313,7 @@ public sealed class WriteTickMap
             if (newCount == 0)
             {
                 _blocks.RemoveAt(blockIndex);
+                ReturnBlock(block);
                 CoalesceAt(blockIndex);
                 return;
             }
@@ -323,10 +334,10 @@ public sealed class WriteTickMap
             var blockCount = (newCount + BlockCapacity - 1) / BlockCapacity;
             var block0 = newCount == 0 ? null : _blocks[firstBlockIndex];
             var block1 = blockCount > 1
-                ? (removedBlockCount > 1 ? _blocks[firstBlockIndex + 1] : new Block())
+                ? (removedBlockCount > 1 ? _blocks[firstBlockIndex + 1] : RentBlock())
                 : null;
             var block2 = blockCount > 2
-                ? (removedBlockCount > 2 ? _blocks[firstBlockIndex + 2] : new Block())
+                ? (removedBlockCount > 2 ? _blocks[firstBlockIndex + 2] : RentBlock())
                 : null;
             var scratch = ArrayPool<Entry>.Shared.Rent(Math.Max(1, newCount));
             try
@@ -358,13 +369,18 @@ public sealed class WriteTickMap
             _count = _count - removed + replacements.Length;
             if (blockCount == 0)
             {
+                ReturnBlocks(firstBlockIndex, removedBlockCount);
                 _blocks.RemoveRange(firstBlockIndex, removedBlockCount);
                 CoalesceAt(firstBlockIndex);
                 return;
             }
 
             if (removedBlockCount > blockCount)
+            {
+                // The blocks past the rewritten ones held only replaced entries.
+                ReturnBlocks(firstBlockIndex + blockCount, removedBlockCount - blockCount);
                 _blocks.RemoveRange(firstBlockIndex + blockCount, removedBlockCount - blockCount);
+            }
             else if (blockCount > removedBlockCount)
             {
                 for (var index = removedBlockCount; index < blockCount; index++)
@@ -378,7 +394,7 @@ public sealed class WriteTickMap
 
         private void SplitBlock(int blockIndex, Block block)
         {
-            var right = new Block();
+            var right = RentBlock();
             var split = block.Count / 2;
             right.Write(block.Entries.AsSpan(split, block.Count - split));
             block.Count = split;
@@ -402,7 +418,22 @@ public sealed class WriteTickMap
             right.Entries.AsSpan(0, right.Count).CopyTo(left.Entries.AsSpan(left.Count));
             left.Count += right.Count;
             _blocks.RemoveAt(rightIndex);
+            ReturnBlock(right);
             return true;
+        }
+
+        private Block RentBlock()
+        {
+            if (_spareBlocks is null || !_spareBlocks.TryPop(out var block)) return new Block();
+            block.Count = 0;
+            return block;
+        }
+
+        private void ReturnBlock(Block block) => (_spareBlocks ??= new()).Push(block);
+
+        private void ReturnBlocks(int index, int count)
+        {
+            for (var offset = 0; offset < count; offset++) ReturnBlock(_blocks[index + offset]);
         }
     }
 }
