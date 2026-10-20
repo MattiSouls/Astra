@@ -36,7 +36,7 @@ internal static unsafe partial class VulkanVideoPresenter
             if (OnCommandThread)
             {
                 if (!_guestPublications.HasOverlap(address, size, includeLabels, skipGpuSlots)) return;
-                _commandThread!.Run(() => CompleteOverlappingPublications(address, size, includeLabels, skipGpuSlots));
+                CompleteOverlappingPublicationsOnRenderThread(address, size, includeLabels, skipGpuSlots);
                 return;
             }
             var tick = _guestPublications.OverlapTick(address, size, includeLabels, skipGpuSlots);
@@ -44,6 +44,12 @@ internal static unsafe partial class VulkanVideoPresenter
             _scheduler.Wait(tick);
             _scheduler.RunCompletedOperations();
         }
+
+        // Its own method so the lambda's closure is allocated only for this hand-off; captured in
+        // the method above, it was allocated on every call, including the ones that return early.
+        private void CompleteOverlappingPublicationsOnRenderThread(ulong address, ulong size, bool includeLabels, bool skipGpuSlots) =>
+            _commandThread!.Run(() => CompleteOverlappingPublications(address, size, includeLabels, skipGpuSlots));
+
         public bool TryReadOcclusionCounter(int queueId, out ulong value)
         {
             if (OnCommandThread)
