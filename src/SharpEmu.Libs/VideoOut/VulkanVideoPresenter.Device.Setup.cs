@@ -17,6 +17,10 @@ using VkSemaphore = Silk.NET.Vulkan.Semaphore;
 
 internal static unsafe partial class VulkanVideoPresenter
 {
+    // The pipeline cache is kept in a file unless SHARPEMU_VK_PIPELINE_CACHE=0 turns persistence off.
+    internal static bool PersistsPipelineCache(string? cacheMode) =>
+        !string.Equals(cacheMode, "0", StringComparison.Ordinal);
+
     private sealed partial class Presenter
     {
         // This partial initializes Vulkan host infrastructure.
@@ -61,7 +65,9 @@ internal static unsafe partial class VulkanVideoPresenter
         private const long PipelineCacheCheckpointIntervalMs = 300_000;
         private const long PipelineCacheRetryMs = 1_000;
         private long _pipelineCacheRetryTick;
-        private const ulong MaxPipelineCacheBytes = 256UL * 1024 * 1024;
+        // A title's translated shaders can need several hundred megabytes of driver cache data
+        // (464 MB seen); a cache over the limit is dropped and rebuilt from scratch next launch.
+        private const ulong MaxPipelineCacheBytes = 1024UL * 1024 * 1024;
         private HashSet<string>? _resetPipelineCachePaths;
         private nuint _pipelineCacheSavedBytes;
         private Queue _queue;
@@ -1406,13 +1412,12 @@ internal static unsafe partial class VulkanVideoPresenter
             var useShards = shardMode == "1" || (shardMode is null && OperatingSystem.IsMacOS());
             // Vulkan cache blobs carry the implementation's compatibility
             // header and are rejected/rebuilt below when the device or driver
-            // changes. MoltenVK compilation of a large translated shader can
-            // take ten seconds, so discarding a valid cache at every launch is
-            // much more harmful than using Vulkan's normal persistence path.
+            // changes. Compiling a large translated shader can take seconds, so
+            // discarding a valid cache at every launch is much more harmful than
+            // using Vulkan's normal persistence path; the driver's own shader cache
+            // cannot stand in for it, since it stops storing pipelines once full.
             // Keep an explicit opt-out for diagnostics and read-only systems.
-            var persistentCacheEnabled =
-                !string.Equals(cacheMode, "0", StringComparison.Ordinal) &&
-                (useShards || !OperatingSystem.IsWindows() || cacheMode is "1" or "file");
+            var persistentCacheEnabled = PersistsPipelineCache(cacheMode);
             _pipelineCachePath = persistentCacheEnabled ? GetPipelineCachePath() : null;
             if (_pipelineCachePath is not null &&
                 useShards)
@@ -1478,12 +1483,8 @@ internal static unsafe partial class VulkanVideoPresenter
             if (_pipelineCachePath is null)
             {
                 Console.Error.WriteLine(
-                    string.Equals(cacheMode, "0", StringComparison.Ordinal)
-                        ? "[LOADER][INFO] Vulkan pipeline cache ready: memory-only " +
-                          "(persistence disabled with SHARPEMU_VK_PIPELINE_CACHE=0)."
-                        : "[LOADER][INFO] Vulkan pipeline cache ready: memory-only " +
-                          "(the driver shader cache and the shader prewarm list replace the cache file; " +
-                          "SHARPEMU_VK_PIPELINE_CACHE=file keeps one).");
+                    "[LOADER][INFO] Vulkan pipeline cache ready: memory-only " +
+                    "(persistence disabled with SHARPEMU_VK_PIPELINE_CACHE=0).");
             }
             else
             {
