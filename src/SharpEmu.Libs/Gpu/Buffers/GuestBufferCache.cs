@@ -3179,10 +3179,7 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
 
         if (source != null)
         {
-            foreach (var copy in copies)
-            {
-                buffer.NoteGpuWrite(copy.DstOffset, copy.Size);
-            }
+            buffer.NoteGpuWrites(CollectionsMarshal.AsSpan(copies));
 
             if (MeshDrawTrace.Active) MeshDrawTrace.Range("buffer-upload", guestAddress, size, $"bytes={totalSize} copies={copies.Count}");
             var command = _scheduler.Current;

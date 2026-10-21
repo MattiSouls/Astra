@@ -202,6 +202,50 @@ public unsafe class GpuBuffer : IDisposable
         }
 
         _writeTicks.Assign(offset, Math.Min(size, Size - offset), tick);
+        PruneWriteTicksWhenGrown();
+    }
+
+    // NoteGpuWrite for every region of one copy: a filtered upload can hold tens of thousands of
+    // small regions, which the map takes in one pass.
+    public void NoteGpuWrites(ReadOnlySpan<BufferCopy> regions)
+    {
+        if (regions.Length < 2)
+        {
+            foreach (var region in regions) NoteGpuWrite(region.DstOffset, region.Size);
+            return;
+        }
+
+        var tick = _scheduler.CurrentTick;
+        if (tick > LastGpuWriteTick)
+        {
+            LastGpuWriteTick = tick;
+        }
+
+        if (_rangeScratch is null || _rangeScratch.Length < regions.Length)
+        {
+            _rangeScratch = new (ulong, ulong)[Math.Max(regions.Length, (_rangeScratch?.Length ?? 0) * 2)];
+        }
+
+        var ranges = _rangeScratch;
+        var count = 0;
+        foreach (var region in regions)
+        {
+            if (region.Size != 0 && region.DstOffset < Size)
+            {
+                ranges[count++] = (region.DstOffset, Math.Min(region.Size, Size - region.DstOffset));
+            }
+        }
+
+        _writeTicks.AssignRanges(ranges.AsSpan(0, count), tick);
+        PruneWriteTicksWhenGrown();
+    }
+
+    // The regions of a large upload, kept per thread: a pool drops arrays this size between uses.
+    [ThreadStatic]
+    private static (ulong Begin, ulong Size)[]? _rangeScratch;
+
+    private void PruneWriteTicksWhenGrown()
+    {
         if (_writeTicks.Count >= _writeTickPruneCount)
         {
             if (Volatile.Read(ref _foreignReads) == 0)

@@ -21,6 +21,27 @@ public sealed class WriteTickMap
         (_storage ??= new()).Assign(begin, size, tick);
     }
 
+    // Assigns every range the tick, as one Assign per range would. Many sorted, disjoint ranges (the
+    // pieces of one filtered upload) are merged into the map in one pass instead of one splice each.
+    public void AssignRanges(ReadOnlySpan<(ulong Begin, ulong Size)> ranges, ulong tick)
+    {
+        var sorted = ranges.Length >= BulkAssignMinimum;
+        for (var index = 1; sorted && index < ranges.Length; index++)
+            sorted = ranges[index].Begin >= ranges[index - 1].Begin + ranges[index - 1].Size;
+
+        var storage = _storage ??= new();
+        if (sorted && (ulong)ranges.Length * 8 >= (ulong)storage.Count)
+        {
+            storage.AssignSorted(ranges, tick);
+            return;
+        }
+
+        foreach (var (begin, size) in ranges)
+            Assign(begin, size, tick);
+    }
+
+    private const int BulkAssignMinimum = 32;
+
     public ulong MaxTick(ulong begin, ulong size) => _storage?.MaxTick(begin, size) ?? 0;
 
     public void Prune(ulong below) => _storage?.Prune(below);
@@ -140,6 +161,103 @@ public sealed class WriteTickMap
             for (var position = FirstEndingAfter(begin); TryGet(position, out var entry) && entry.Begin < end; position = Next(position))
                 tick = Math.Max(tick, entry.Tick);
             return tick;
+        }
+
+        // Rebuilds the map with the ranges overwritten by tick: one sweep over the entries and the ranges,
+        // keeping the parts of entries outside the ranges and joining touching entries of one tick.
+        // Megabytes for a large upload's pieces: kept per thread, since a pool drops arrays this size.
+        [ThreadStatic]
+        private static Entry[]? _existingScratch;
+        [ThreadStatic]
+        private static Entry[]? _outputScratch;
+
+        private static Entry[] Scratch(ref Entry[]? scratch, int length)
+        {
+            if (scratch is null || scratch.Length < length)
+            {
+                scratch = new Entry[Math.Max(length, (scratch?.Length ?? 0) * 2)];
+            }
+
+            return scratch;
+        }
+
+        internal void AssignSorted(ReadOnlySpan<(ulong Begin, ulong Size)> ranges, ulong tick)
+        {
+            var existing = Scratch(ref _existingScratch, Math.Max(1, _count));
+            var output = Scratch(ref _outputScratch, _count + 2 * ranges.Length + 1);
+            var existingCount = 0;
+            foreach (var block in _blocks)
+            {
+                block.Entries.AsSpan(0, block.Count).CopyTo(existing.AsSpan(existingCount));
+                existingCount += block.Count;
+            }
+
+            var outputCount = 0;
+            static void Emit(Entry[] output, ref int outputCount, Entry entry)
+            {
+                if (entry.Begin >= entry.End) return;
+                if (outputCount != 0 && output[outputCount - 1].End == entry.Begin && output[outputCount - 1].Tick == entry.Tick)
+                {
+                    output[outputCount - 1] = output[outputCount - 1] with { End = entry.End };
+                    return;
+                }
+
+                output[outputCount++] = entry;
+            }
+
+            var next = 0;
+            foreach (var (begin, size) in ranges)
+            {
+                if (size == 0) continue;
+                var end = begin + size;
+                // Entries wholly before the range stay; one reaching into it keeps its left part.
+                while (next < existingCount && existing[next].Begin < begin)
+                {
+                    var entry = existing[next];
+                    if (entry.End <= begin)
+                    {
+                        Emit(output, ref outputCount, entry);
+                        next++;
+                        continue;
+                    }
+
+                    Emit(output, ref outputCount, entry with { End = begin });
+                    existing[next] = entry with { Begin = begin };
+                    break;
+                }
+
+                Emit(output, ref outputCount, new Entry(begin, end, tick));
+                // Entries under the range go; one reaching past it keeps its right part.
+                while (next < existingCount && existing[next].Begin < end)
+                {
+                    if (existing[next].End > end)
+                    {
+                        existing[next] = existing[next] with { Begin = end };
+                        break;
+                    }
+
+                    next++;
+                }
+            }
+
+            for (; next < existingCount; next++) Emit(output, ref outputCount, existing[next]);
+            Rebuild(output.AsSpan(0, outputCount));
+        }
+
+        // Refills the blocks from sorted entries, three quarters full so later splices have room.
+        private void Rebuild(ReadOnlySpan<Entry> entries)
+        {
+            foreach (var block in _blocks) ReturnBlock(block);
+            _blocks.Clear();
+            const int fill = BlockCapacity * 3 / 4;
+            for (var start = 0; start < entries.Length; start += fill)
+            {
+                var block = RentBlock();
+                block.Write(entries.Slice(start, Math.Min(fill, entries.Length - start)));
+                _blocks.Add(block);
+            }
+
+            _count = entries.Length;
         }
 
         internal void Prune(ulong below)

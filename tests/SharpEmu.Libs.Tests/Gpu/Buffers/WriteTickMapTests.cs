@@ -221,6 +221,54 @@ public sealed class WriteTickMapTests
     }
 
     [Fact]
+    public void AssigningSortedRangesAtOnceMatchesAssigningThemOneByOne()
+    {
+        var random = new System.Random(7);
+        for (var trial = 0; trial < 300; trial++)
+        {
+            var oneByOne = new WriteTickMap();
+            var atOnce = new WriteTickMap();
+            for (var write = random.Next(0, 200); write > 0; write--)
+            {
+                var begin = (ulong)random.Next(0, 20_000);
+                var size = (ulong)random.Next(1, 300);
+                var tick = (ulong)random.Next(1, 6);
+                oneByOne.Assign(begin, size, tick);
+                atOnce.Assign(begin, size, tick);
+            }
+
+            if (random.Next(3) == 0)
+            {
+                var below = (ulong)random.Next(1, 6);
+                oneByOne.Prune(below);
+                atOnce.Prune(below);
+            }
+
+            // Many sorted, disjoint ranges, as one filtered upload produces.
+            var ranges = new List<(ulong Begin, ulong Size)>();
+            for (var position = (ulong)random.Next(0, 50); position < 25_000 && ranges.Count < 200;)
+            {
+                var length = (ulong)random.Next(1, 120);
+                ranges.Add((position, length));
+                position += length + (ulong)random.Next(0, 150);
+            }
+
+            var rangeTick = (ulong)random.Next(1, 8);
+            foreach (var (begin, size) in ranges)
+                oneByOne.Assign(begin, size, rangeTick);
+            atOnce.AssignRanges(ranges.ToArray(), rangeTick);
+
+            Assert.Equal(oneByOne.Floor, atOnce.Floor);
+            for (var query = 0; query < 500; query++)
+            {
+                var begin = (ulong)random.Next(0, 26_000);
+                var size = (ulong)random.Next(1, 400);
+                Assert.Equal(oneByOne.MaxTick(begin, size), atOnce.MaxTick(begin, size));
+            }
+        }
+    }
+
+    [Fact]
     public void RepeatedSplitsMergesAndPrunesReuseTheMapsBlocks()
     {
         const ulong addressBase = 0x10000;
