@@ -149,6 +149,57 @@ public sealed class AudioOut2PcmSnapshotTests : IDisposable
     }
 
     [Fact]
+    public void PortSetAttributes_ReusesTheGrainTheMixerFinishedWith()
+    {
+        AudioOut2Exports.SetStreamFactoryForTests(_ => new RecordingAudioStream());
+        var context = CreateContext(grainSamples: 64);
+        var port = CreateSigned16StereoPort(context, FirstPortOutAddress);
+        WritePcmAttribute();
+        var firstPcm = Enumerable.Repeat((byte)0x11, 64 * 2 * sizeof(short)).ToArray();
+        var secondPcm = Enumerable.Repeat((byte)0x22, firstPcm.Length).ToArray();
+
+        Assert.True(_memory.TryWrite(SharedPcmAddress, firstPcm));
+        SetPcmAttribute(port);
+        _ctx[CpuRegister.Rdi] = context;
+        Assert.Equal(0, AudioOut2Exports.AudioOut2ContextAdvance(_ctx));
+        var mixed = AudioOut2Exports.GetPortSparePcmForTests(port);
+        Assert.NotNull(mixed);
+
+        Assert.True(_memory.TryWrite(SharedPcmAddress, secondPcm));
+        SetPcmAttribute(port);
+        var snapshot = AudioOut2Exports.TakePortPcmSnapshotForTests(port);
+
+        Assert.Same(mixed, snapshot);
+        Assert.Equal(secondPcm, snapshot);
+        Assert.Null(AudioOut2Exports.GetPortSparePcmForTests(port));
+    }
+
+    [Fact]
+    public void PortSetAttributes_ReusesAGrainReplacedBeforeItWasMixed()
+    {
+        var context = CreateContext(grainSamples: 64);
+        var port = CreateSigned16StereoPort(context, FirstPortOutAddress);
+        WritePcmAttribute();
+        var pcm = Enumerable.Range(0, 3)
+            .Select(grain => Enumerable.Repeat((byte)(grain + 1), 64 * 2 * sizeof(short)).ToArray())
+            .ToArray();
+
+        Assert.True(_memory.TryWrite(SharedPcmAddress, pcm[0]));
+        SetPcmAttribute(port);
+        Assert.True(_memory.TryWrite(SharedPcmAddress, pcm[1]));
+        SetPcmAttribute(port);
+        var replaced = AudioOut2Exports.GetPortSparePcmForTests(port);
+        Assert.Equal(pcm[0], replaced);
+
+        Assert.True(_memory.TryWrite(SharedPcmAddress, pcm[2]));
+        SetPcmAttribute(port);
+        var snapshot = AudioOut2Exports.TakePortPcmSnapshotForTests(port);
+
+        Assert.Same(replaced, snapshot);
+        Assert.Equal(pcm[2], snapshot);
+    }
+
+    [Fact]
     public void ContextDestroy_RemovesOwnedPortsAndPendingSnapshots()
     {
         var firstContext = CreateContext(grainSamples: 64);

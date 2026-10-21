@@ -235,6 +235,8 @@ public static class AudioOut2Exports
         public uint Passthrough;
 
         public byte[]? PcmData;
+        // A grain array no longer published or being mixed, kept for the next snapshot.
+        public byte[]? SparePcm;
 
     }
 
@@ -760,7 +762,10 @@ public static class AudioOut2Exports
                     return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
                 }
 
-                pcmData = new byte[byteLength];
+                // A grain the mixer finished with, or one replaced before it was mixed, is
+                // reused; a new array per grain is otherwise allocated hundreds of times a second.
+                pcmData = Interlocked.Exchange(ref port.SparePcm, null);
+                if (pcmData?.Length != byteLength) pcmData = new byte[byteLength];
                 if (!ctx.Memory.TryRead(pcmAddress, pcmData))
                 {
                     return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
@@ -768,7 +773,9 @@ public static class AudioOut2Exports
             }
 
             port.PcmAddress = pcmAddress;
-            Volatile.Write(ref port.PcmData, pcmData);
+            // The replaced grain was never taken by the mixer, so nothing else holds it.
+            var replaced = Interlocked.Exchange(ref port.PcmData, pcmData);
+            if (replaced is not null) Volatile.Write(ref port.SparePcm, replaced);
             var n = Interlocked.Increment(ref _attributePcmTraceCount);
             if (n <= 8 || n % 500 == 0)
             {
@@ -1395,39 +1402,47 @@ public static class AudioOut2Exports
                         continue;
                     }
 
-                    if (!TryGetStereoGains(
-                            port.PortType,
+                    try
+                    {
+                        if (!TryGetStereoGains(
+                                port.PortType,
+                                ch,
+                                port.Gain,
+                                port.Ambisonics,
+                                port.Passthrough,
+                                out var leftGain,
+                                out var rightGain))
+                        {
+                            continue;
+                        }
+
+                        var byteLength = checked(frames * ch * bps);
+                        if (byteLength <= 0 || byteLength > checked(frames * 16 * sizeof(float)))
+                        {
+                            continue;
+                        }
+
+                        if (pcmData.Length < byteLength)
+                        {
+                            continue;
+                        }
+
+                        MixPortIntoStereo(
+                            pcmData.AsSpan(0, byteLength),
+                            mix.AsSpan(0, frames * 2),
+                            frames,
                             ch,
-                            port.Gain,
-                            port.Ambisonics,
-                            port.Passthrough,
-                            out var leftGain,
-                            out var rightGain))
-                    {
-                        continue;
+                            bps,
+                            isFloat,
+                            leftGain,
+                            rightGain);
+                        mixedPorts++;
                     }
-
-                    var byteLength = checked(frames * ch * bps);
-                    if (byteLength <= 0 || byteLength > checked(frames * 16 * sizeof(float)))
+                    finally
                     {
-                        continue;
+                        // Mixed or skipped, the grain is free for the next snapshot.
+                        Volatile.Write(ref port.SparePcm, pcmData);
                     }
-
-                    if (pcmData.Length < byteLength)
-                    {
-                        continue;
-                    }
-
-                    MixPortIntoStereo(
-                        pcmData.AsSpan(0, byteLength),
-                        mix.AsSpan(0, frames * 2),
-                        frames,
-                        ch,
-                        bps,
-                        isFloat,
-                        leftGain,
-                        rightGain);
-                    mixedPorts++;
                 }
 
                 if (mixedPorts == 0)
@@ -1490,6 +1505,9 @@ public static class AudioOut2Exports
     }
 
     internal static bool HasPortForTests(ulong portHandle) => Ports.ContainsKey(portHandle);
+
+    internal static byte[]? GetPortSparePcmForTests(ulong portHandle) =>
+        Ports.TryGetValue(portHandle, out var port) ? Volatile.Read(ref port.SparePcm) : null;
 
     internal static byte[]? TakePortPcmSnapshotForTests(ulong portHandle)
     {
