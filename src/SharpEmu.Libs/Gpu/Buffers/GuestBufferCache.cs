@@ -3123,6 +3123,11 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
         public ulong TotalSize;
         public GpuBuffer? Source;
         public bool InUse;
+        // Set when shared pages may filter the upload: the guest bytes are kept here, in cached memory,
+        // for the filter to diff (Snapshot[i] is the source byte at SnapshotBase + i).
+        public bool KeepSnapshot;
+        public byte[] Snapshot = [];
+        public ulong SnapshotBase;
         public readonly Action<ulong, ulong> Collect;
         public readonly Action Upload;
 
@@ -3133,7 +3138,16 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
                 Copies.Add(new BufferCopy(TotalSize, _buffer.Offset(address), bytes));
                 TotalSize += bytes;
             };
-            Upload = () => Source = _cache._uploader.PrepareSource(_buffer.CpuAddress, CollectionsMarshal.AsSpan(Copies), TotalSize, _guestAddress, _size, _readSource);
+            Upload = () =>
+            {
+                if (KeepSnapshot && (ulong)Snapshot.Length < TotalSize)
+                {
+                    Snapshot = new byte[Math.Max(TotalSize, (ulong)Snapshot.Length * 2)];
+                }
+
+                Source = _cache._uploader.PrepareSource(_buffer.CpuAddress, CollectionsMarshal.AsSpan(Copies), TotalSize, _guestAddress, _size,
+                    _readSource, KeepSnapshot ? Snapshot : default, out SnapshotBase);
+            };
         }
 
         public void Begin(GuestBufferCache cache, GpuBuffer buffer, ulong guestAddress, ulong size, GuestBufferSourceReader? readSource)
@@ -3155,6 +3169,8 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
             Copies.Clear();
             TotalSize = 0;
             Source = null;
+            KeepSnapshot = false;
+            SnapshotBase = 0;
         }
     }
 
@@ -3164,13 +3180,15 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
         bool isTexelBuffer, bool preserveCpuWriteHotPages, bool readImageBacking, long startedAt)
     {
         var copies = collector.Copies;
+        collector.KeepSnapshot = _sharedPages.Count != 0;
         _tracker.ForEachUploadRange(guestAddress, size, isWritten, collector.Collect, collector.Upload, preserveCpuWriteHotPages);
         var source = collector.Source;
         var totalSize = collector.TotalSize;
-        if (source != null && _sharedPages.Count != 0)
+        if (source != null && collector.KeepSnapshot)
         {
-            // Shared pages copy only the bytes the CPU changed, so shader bytes in the buffer stay.
-            _sharedPages.FilterUpload(copies, buffer, buffer.CpuAddress, source.Mapped, _scheduler.CurrentTick);
+            // Shared pages copy only the bytes the CPU changed, so shader bytes in the buffer stay. The
+            // filter diffs the cached snapshot the source was filled from, not the source mapping.
+            _sharedPages.FilterUpload(copies, buffer, buffer.CpuAddress, collector.Snapshot, _scheduler.CurrentTick, collector.SnapshotBase);
             if (copies.Count == 0)
             {
                 source = null;

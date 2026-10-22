@@ -246,7 +246,9 @@ internal sealed unsafe class SharedPageShadows(ulong pageBytes, int capacity)
     // staged (indexed by SrcOffset) into a buffer at targetAddress (indexed by DstOffset); copies
     // over shadowed pages are split into the runs that differ from the shadow, which takes them.
     // An upload into a new owner copies everything and shadows the page from it.
-    public void FilterUpload(List<BufferCopy> copies, object target, ulong targetAddress, ReadOnlySpan<byte> staged, ulong tick)
+    // staged holds the source bytes from stagedBase on: copy.SrcOffset - stagedBase indexes it.
+    public void FilterUpload(List<BufferCopy> copies, object target, ulong targetAddress, ReadOnlySpan<byte> staged, ulong tick,
+        ulong stagedBase = 0)
     {
         if (Count == 0)
         {
@@ -289,7 +291,7 @@ internal sealed unsafe class SharedPageShadows(ulong pageBytes, int capacity)
 
                     emitted = to;
                     // The staging mapping is write-combining: diff a copy, not the mapping itself.
-                    var stagedSlice = staged.Slice(checked((int)(copy.SrcOffset + (from - begin))), checked((int)(to - from)));
+                    var stagedSlice = staged.Slice(checked((int)(copy.SrcOffset - stagedBase + (from - begin))), checked((int)(to - from)));
                     var source = pageScratch[..stagedSlice.Length];
                     stagedSlice.CopyTo(source);
                     var shadowBytes = shadow.Bytes.AsSpan(checked((int)(from - page)), source.Length);

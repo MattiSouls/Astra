@@ -15,32 +15,55 @@ internal sealed class GuestBufferUploader(
     GpuDeviceInfo device, SubmissionScheduler scheduler, ICpuMemory guest, GpuRingBuffer staging)
 {
     public GpuBuffer? PrepareSource(ulong bufferAddress, Span<BufferCopy> regions,
-        ulong totalSize, ulong requestedAddress, ulong requestedSize, GuestBufferSourceReader? readSource = null)
+        ulong totalSize, ulong requestedAddress, ulong requestedSize, GuestBufferSourceReader? readSource = null) =>
+        PrepareSource(bufferAddress, regions, totalSize, requestedAddress, requestedSize, readSource, default, out _);
+
+    // With a snapshot at least totalSize long, the guest bytes are read into it and copied to the source
+    // from there, and sourceBase is where the snapshot's first byte lies in the source. The source is
+    // write-combining memory, which reads back very slowly; a caller that needs the uploaded bytes again
+    // reads the snapshot instead.
+    public GpuBuffer? PrepareSource(ulong bufferAddress, Span<BufferCopy> regions,
+        ulong totalSize, ulong requestedAddress, ulong requestedSize, GuestBufferSourceReader? readSource,
+        Span<byte> snapshot, out ulong sourceBase)
     {
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.BufferStagingUpload);
+        sourceBase = 0;
         if (regions.IsEmpty)
         {
             return null;
         }
 
+        var keep = (ulong)snapshot.Length >= totalSize;
         if (staging.TryMap(totalSize, out var baseOffset, 4))
         {
             foreach (ref var copy in regions)
             {
-                ReadGuestBytes(bufferAddress + copy.DstOffset,
-                    staging.Mapped.Slice((int)(baseOffset + copy.SrcOffset), (int)copy.Size), requestedAddress, requestedSize, readSource);
+                var destination = staging.Mapped.Slice((int)(baseOffset + copy.SrcOffset), (int)copy.Size);
+                ReadGuestBytes(bufferAddress + copy.DstOffset, keep ? snapshot.Slice((int)copy.SrcOffset, (int)copy.Size) : destination,
+                    requestedAddress, requestedSize, readSource);
+                if (keep)
+                {
+                    snapshot.Slice((int)copy.SrcOffset, (int)copy.Size).CopyTo(destination);
+                }
+
                 copy.SrcOffset += baseOffset;
             }
 
             staging.Commit();
+            sourceBase = baseOffset;
             return staging;
         }
 
         var temporary = new GpuBuffer(device, scheduler, GpuBufferUsage.Upload, 0, BufferUsageFlags.TransferSrcBit, totalSize);
         foreach (ref readonly var copy in regions)
         {
-            ReadGuestBytes(bufferAddress + copy.DstOffset,
-                temporary.Mapped.Slice((int)copy.SrcOffset, (int)copy.Size), requestedAddress, requestedSize, readSource);
+            var destination = temporary.Mapped.Slice((int)copy.SrcOffset, (int)copy.Size);
+            ReadGuestBytes(bufferAddress + copy.DstOffset, keep ? snapshot.Slice((int)copy.SrcOffset, (int)copy.Size) : destination,
+                requestedAddress, requestedSize, readSource);
+            if (keep)
+            {
+                snapshot.Slice((int)copy.SrcOffset, (int)copy.Size).CopyTo(destination);
+            }
         }
 
         temporary.Flush(0, totalSize);

@@ -415,6 +415,43 @@ public sealed class GuestBufferCacheTests : IClassFixture<HeadlessVulkanFixture>
         harness.Shutdown();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UploadSourceKeepsACachedSnapshotOfTheBytesItStaged(bool useTemporaryBuffer)
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        harness.Write(address, [1, 2, 3, 4, 5, 6, 7, 8]);
+        harness.Write(address + 32, [9, 10, 11, 12, 13, 14, 15, 16]);
+        harness.Worker.Run(() =>
+        {
+            using var staging = new GpuRingBuffer(_vulkan.DeviceInfo, harness.Scheduler,
+                GpuBufferUsage.Upload, useTemporaryBuffer ? 8UL : 128UL);
+            if (!useTemporaryBuffer) staging.Copy(new byte[16], 4);
+            var uploader = new GuestBufferUploader(_vulkan.DeviceInfo, harness.Scheduler, harness.Memory, staging);
+            BufferCopy[] regions = [new(0, 0, 8), new(8, 32, 8)];
+            var snapshot = new byte[16];
+            var source = uploader.PrepareSource(address, regions, 16, address, 40, null, snapshot, out var sourceBase);
+            Assert.NotNull(source);
+            Assert.Equal(useTemporaryBuffer ? 0UL : 16UL, sourceBase);
+            Assert.Equal(sourceBase, regions[0].SrcOffset);
+            Assert.Equal(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, snapshot);
+
+            // The source holds the same bytes as the snapshot.
+            using var download = new GpuBuffer(_vulkan.DeviceInfo, harness.Scheduler,
+                GpuBufferUsage.Download, 0, GpuBuffer.AllFlags, 16);
+            download.CopyFrom(harness.Scheduler.Current, source, sourceBase, 0, 16,
+                AccessFlags.HostWriteBit, AccessFlags.None,
+                AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit, AccessFlags.HostReadBit);
+            harness.Scheduler.Finish();
+            download.Invalidate(0, 16);
+            Assert.Equal(snapshot, download.Mapped[..16].ToArray());
+        });
+        harness.Shutdown();
+    }
+
     [Fact]
     public void EmptyUploadDoesNotReserveStagingBytes()
     {

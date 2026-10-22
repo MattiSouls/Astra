@@ -32,6 +32,24 @@ public sealed class SharedPageShadowsTests
     }
 
     [Fact]
+    public void UploadDiffsAStagedSnapshotThatStartsAtTheSourceBase()
+    {
+        var owner = new object();
+        var shadows = new SharedPageShadows(PageBytes, 4);
+        Assert.True(shadows.Adopt(Page, owner, Fill(0x11)));
+
+        // The copies stage at 0x100 in the source; the snapshot holds the source from 0x100 on.
+        var snapshot = Fill(0x11);
+        snapshot.AsSpan(4, 4).Fill(0xAA);
+        snapshot[40] = 0xBB;
+        var copies = new List<BufferCopy> { new(0x100, 0, PageBytes) };
+        shadows.FilterUpload(copies, owner, Page, snapshot, tick: 3, stagedBase: 0x100);
+
+        Assert.Equal([new BufferCopy(0x104, 4, 4), new BufferCopy(0x128, 40, 1)], copies);
+        Assert.Equal(PageBytes - 5, (ulong)shadows.SkippedUploadBytes);
+    }
+
+    [Fact]
     public void UploadKeepsCopiesOutsideSharedPagesWhole()
     {
         var owner = new object();
