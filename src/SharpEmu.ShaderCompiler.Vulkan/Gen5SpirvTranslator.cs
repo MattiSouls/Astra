@@ -89,12 +89,25 @@ public static partial class Gen5SpirvTranslator
         // recovery). Bounding the iteration count guarantees the invocation
         // terminates instead: the effect may be wrong for that shader, but the
         // GPU never wedges. 0 disables the guard (original unbounded behaviour).
-        private static readonly int _maxDispatcherSteps =
+        private static readonly int? _configuredMaxSteps =
             int.TryParse(
                 Environment.GetEnvironmentVariable("SHARPEMU_SHADER_MAX_STEPS"),
                 out var maxSteps) && maxSteps >= 0
                 ? maxSteps
-                : 100_000;
+                : null;
+
+        private static readonly int _maxDispatcherSteps = _configuredMaxSteps ?? 100_000;
+
+        // A pixel invocation's structured loops end far sooner: thousands of iterations per pixel
+        // would take a full-screen pass longer than a frame on the hardware as well. A loop that
+        // makes no progress (an exit only partial host subgroups miss) then costs at most this
+        // many iterations instead of the dispatcher's limit, with the same result.
+        private const int PixelLoopIterationLimit = 8192;
+
+        private int StructuredLoopStepLimit =>
+            _stage == Gen5SpirvStage.Pixel && _configuredMaxSteps is null && _maxDispatcherSteps > 0
+                ? Math.Min(_maxDispatcherSteps, PixelLoopIterationLimit)
+                : _maxDispatcherSteps;
 
         // Diagnostic coverage probe. When enabled, every selected MRT export
         // writes opaque magenta while preserving the shader's control flow,
@@ -2160,7 +2173,7 @@ public static partial class Gen5SpirvTranslator
             {
                 var steps = IAdd(Load(_uintType, IterationGuard()), UInt(1));
                 Store(IterationGuard(), steps);
-                var withinLimit = _module.AddInstruction(SpirvOp.ULessThan, _boolType, steps, UInt((uint)_maxDispatcherSteps));
+                var withinLimit = _module.AddInstruction(SpirvOp.ULessThan, _boolType, steps, UInt((uint)StructuredLoopStepLimit));
                 again = _module.AddInstruction(SpirvOp.LogicalAnd, _boolType, again, withinLimit);
             }
 
@@ -2322,7 +2335,7 @@ public static partial class Gen5SpirvTranslator
                 // exit ends the invocation instead of wedging the GPU queue.
                 var steps = IAdd(Load(_uintType, IterationGuard()), UInt(1));
                 Store(IterationGuard(), steps);
-                var withinLimit = _module.AddInstruction(SpirvOp.ULessThan, _boolType, steps, UInt((uint)_maxDispatcherSteps));
+                var withinLimit = _module.AddInstruction(SpirvOp.ULessThan, _boolType, steps, UInt((uint)StructuredLoopStepLimit));
                 again = _module.AddInstruction(SpirvOp.LogicalAnd, _boolType, again, withinLimit);
             }
 
