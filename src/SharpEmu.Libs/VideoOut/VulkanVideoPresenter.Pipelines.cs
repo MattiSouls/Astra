@@ -57,10 +57,12 @@ internal static unsafe partial class VulkanVideoPresenter
             public bool RectangleList => Description is { Tessellation: null, StaticParameters.Topology: PrimitiveTopology.PatchList };
         }
 
-        private readonly Dictionary<ulong, ShaderModule> _shaderModules = new();
-        private readonly Dictionary<ulong, int> _shaderModuleSpirvBytes = new();
-        private readonly Dictionary<ulong, byte[]> _rectangleStageCode = new();
-        private readonly Dictionary<ulong, string> _shaderModuleCacheIdentities = new();
+        // Graphics and compute programs are prepared on separate threads, both creating modules here
+        // while the render thread reads these to create pipelines.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, ShaderModule> _shaderModules = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, int> _shaderModuleSpirvBytes = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, byte[]> _rectangleStageCode = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, string> _shaderModuleCacheIdentities = new();
         private long _pipelineCreationMilliseconds;
         private KhrPushDescriptor _pushDescriptorApi = null!;
         private uint _maxPushDescriptors;
@@ -389,7 +391,11 @@ internal static unsafe partial class VulkanVideoPresenter
             using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramCompile);
             var module = CreateShaderModule(shader.Payload);
             SetDebugName(ObjectType.ShaderModule, module.Handle, $"SharpEmu {stage} 0x{hash:X16}");
-            _shaderModules.Add(programId, module);
+            if (!_shaderModules.TryAdd(programId, module))
+            {
+                throw new ArgumentException($"A shader module for program {programId} already exists.", nameof(programId));
+            }
+
             _shaderModuleSpirvBytes[module.Handle] = shader.Payload.Length;
             if (stage is ShaderStage.Vertex or ShaderStage.Pixel)
                 _rectangleStageCode[module.Handle] = shader.Payload;

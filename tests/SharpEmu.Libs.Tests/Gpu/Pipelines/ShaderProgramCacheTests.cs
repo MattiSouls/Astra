@@ -380,6 +380,20 @@ public sealed class ShaderProgramCacheTests : IDisposable
     }
 
     [Fact]
+    public void ProgramIds_OfASecondCacheStartWhereTheFirstsCannotReach()
+    {
+        _guest.RegisterProgram(CodeA, HeaderA, PipelineTestGuest.EndProgram);
+        var second = new ShaderProgramCache(_guest.Context, _guest.Compiler, _guest.Host, firstProgramId: 1UL << 62);
+        var cursor = 0u;
+
+        var fromFirst = Compile(CodeA);
+        var fromSecond = second.GetOrCompile(_guest.Source(CodeA, ShaderStage.Compute, []), PipelineTestGuest.ComputeOptions(64), ref cursor, out _);
+
+        Assert.Equal(1UL, fromFirst.Id);
+        Assert.Equal(1UL << 62, fromSecond.Id);
+    }
+
+    [Fact]
     public void ProgramIds_AreMonotonicAcrossEntries()
     {
         _guest.RegisterProgram(CodeA, HeaderA, PipelineTestGuest.EndProgram);

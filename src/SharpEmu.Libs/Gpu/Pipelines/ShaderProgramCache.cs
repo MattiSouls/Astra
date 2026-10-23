@@ -182,8 +182,11 @@ internal sealed class ShaderProgramCache
 
     private static readonly bool PrefetchEnabled = Environment.GetEnvironmentVariable("SHARPEMU_RESOURCE_PREFETCH") != "0";
 
-    public ShaderProgramCache(CpuContext context, IGuestGpuBackend compiler, IShaderPipelineHost host)
+    // Program ids name host shader modules and pipelines, which every cache of one host shares: a
+    // second cache starts its ids where the first's can never reach.
+    public ShaderProgramCache(CpuContext context, IGuestGpuBackend compiler, IShaderPipelineHost host, ulong firstProgramId = 1)
     {
+        _nextProgramId = firstProgramId - 1;
         _context = context;
         _compiler = compiler;
         _host = host;
