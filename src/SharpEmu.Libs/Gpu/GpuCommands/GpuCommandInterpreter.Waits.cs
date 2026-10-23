@@ -187,6 +187,8 @@ public sealed partial class GpuCommandInterpreter
         }
 
         WaitOnMemory(control & 0x7u, address, reference, mask, WaitOperation.Decode(control, is64Bit), is64Bit);
+        // Commands after the wait may read what the guest wrote before releasing it.
+        Buffers.GuestOrderingPoints.Advance();
         return payloadDwords;
     }
 

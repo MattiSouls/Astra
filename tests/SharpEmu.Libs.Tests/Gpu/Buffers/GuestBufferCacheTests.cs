@@ -956,6 +956,8 @@ public sealed class GuestBufferCacheTests : IClassFixture<HeadlessVulkanFixture>
             Assert.True(harness.Store.MarkCpuWrite(address, size));
             var expected = Pattern((int)size, (byte)write);
             harness.Write(address, expected);
+            // The guest submits the work that reads the write.
+            GuestOrderingPoints.Advance();
             harness.Worker.Run(() =>
             {
                 harness.Cache.PrepareBda([new GuestSpan(address, size)]);
@@ -1000,6 +1002,7 @@ public sealed class GuestBufferCacheTests : IClassFixture<HeadlessVulkanFixture>
             Assert.True(harness.Store.MarkCpuWrite(address, size));
             harness.Write(address, expected);
         });
+        GuestOrderingPoints.Advance();
         harness.Worker.Run(() => harness.Cache.PrepareBda([new GuestSpan(address, size)]));
         Assert.False(harness.Cache.HasCpuDirtyPages(address, size));
         Assert.Equal(expected, harness.ReadBack(buffer, offset, size));

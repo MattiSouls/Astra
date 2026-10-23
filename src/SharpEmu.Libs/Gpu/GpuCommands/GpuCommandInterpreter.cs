@@ -170,6 +170,8 @@ public sealed partial class GpuCommandInterpreter
             throw _host.Fatal($"The command interpreter is already running a stream: queue={QueueId}.");
         }
 
+        Buffers.GuestOrderingPoints.Advance();
+
         if (execution.IsEmpty && dwordCount != 0)
         {
             execution.Push(new PacketCursor(address, dwordCount, ringChunkBase: address));

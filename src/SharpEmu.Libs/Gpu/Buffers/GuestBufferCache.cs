@@ -1840,13 +1840,17 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
                 _bdaTouchMapping = mapping;
             }
 
+            // CPU writes after the latest ordering point are not ones a command already issued can
+            // depend on: they are swept at the next point, not before every device-address draw.
             var epoch = _tracker.CpuDirtyEpoch;
-            if (epoch != _bdaSweepEpoch || mapping != _bdaSweepMapping)
+            var generation = GuestOrderingPoints.Generation;
+            if (mapping != _bdaSweepMapping || (epoch != _bdaSweepEpoch && generation != _bdaSweepGeneration))
             {
                 foreach (var span in spans)
                     _tracker.ForEachPossiblyCpuDirtyRange(span.Address, span.Size, _uploadDirtyBuffersInRange ??= UploadDirtyBuffersInRange);
                 _bdaSweepEpoch = epoch;
                 _bdaSweepMapping = mapping;
+                _bdaSweepGeneration = generation;
             }
         }
 
@@ -1859,6 +1863,7 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
     private Action<ulong, ulong>? _uploadDirtyBuffersInRange;
     private Action<ulong, ulong>? _touchBuffersInRange;
     private long _bdaSweepEpoch = -1;
+    private long _bdaSweepGeneration = -1;
     private ulong _bdaSweepMapping;
 
     private void TouchBuffersInRange(ulong guestAddress, ulong size)
