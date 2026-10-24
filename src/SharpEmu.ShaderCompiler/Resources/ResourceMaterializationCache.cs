@@ -219,6 +219,27 @@ public sealed partial class ResourceMaterializationCache
 
         public bool HasLearnableMemoryBases => _memoryLearnable != 0;
 
+        // A draw key whose stored entries are never reused (every draw brings words the key holds
+        // and no rebase explains) is materialized without the cache for a while: building, learning
+        // from and storing its entries is work no later draw takes back. It is tried again after.
+        public const int UnusedStoreLimit = 1024;
+        public const int BypassLength = 8192;
+        public int Served;
+        public int Stores;
+        public int Bypass;
+
+        public void NoteServed() => Served++;
+
+        public void NoteStored()
+        {
+            if (++Stores < UnusedStoreLimit)
+                return;
+            if (Served == 0)
+                Bypass = BypassLength;
+            Stores = 0;
+            Served = 0;
+        }
+
 
         public bool IsRejectedMemoryBase(int buffer) => _memoryState[buffer] == MemoryRejected;
 
@@ -786,6 +807,7 @@ public sealed partial class ResourceMaterializationCache
     private static long _totalHits;
     private static long _totalMisses;
     private static long _totalUncacheable;
+    private static long _totalBypassed;
     private const int MaxVariants = 8;
     private static long _totalStale;
     private static long _totalStaleUnreadable;
@@ -837,6 +859,7 @@ public sealed partial class ResourceMaterializationCache
         var hits = Interlocked.Exchange(ref _totalHits, 0);
         var misses = Interlocked.Exchange(ref _totalMisses, 0);
         var uncacheable = Interlocked.Exchange(ref _totalUncacheable, 0);
+        var bypassed = Interlocked.Exchange(ref _totalBypassed, 0);
         var stale = Interlocked.Exchange(ref _totalStale, 0);
         var staleUnreadable = Interlocked.Exchange(ref _totalStaleUnreadable, 0);
         var refreshes = Interlocked.Exchange(ref _totalRefreshes, 0);
@@ -848,7 +871,7 @@ public sealed partial class ResourceMaterializationCache
                 $"{(Diagnostic)index}={Interlocked.Exchange(ref DiagnosticCounts[index], 0)}"))
             : string.Empty;
         return FormattableString.Invariant(
-            $"[PERF][RESOURCE_CACHE] hits={hits} misses={misses} not_found={notFound} stale={stale} stale_unreadable={staleUnreadable} refreshes={refreshes} refused={refusals} uncacheable={uncacheable} hit_rate={(total == 0 ? 0 : hits * 100.0 / total):F1}% {RawReadPrefetch.TakeReport()}{diagnostics}") +
+            $"[PERF][RESOURCE_CACHE] hits={hits} misses={misses} not_found={notFound} stale={stale} stale_unreadable={staleUnreadable} refreshes={refreshes} refused={refusals} uncacheable={uncacheable} bypassed={bypassed} hit_rate={(total == 0 ? 0 : hits * 100.0 / total):F1}% {RawReadPrefetch.TakeReport()}{diagnostics}") +
             TakeStaleDifferenceReport() + TakeMissReport() + TakeDetailReport();
     }
 
@@ -976,6 +999,16 @@ public sealed partial class ResourceMaterializationCache
         var drawKey = DrawKeyOf(plan, inputs);
         _learnedUserData.TryGetValue(drawKey, out var learned);
         var rebase = RebaseOf(drawKey, plan);
+        if (rebase.Bypass > 0)
+        {
+            rebase.Bypass--;
+            Misses++;
+            Interlocked.Increment(ref _totalMisses);
+            Interlocked.Increment(ref _totalBypassed);
+            timing.ChangePhase(MaterializationPhase.Materialization);
+            return ResourceMaterializer.Materialize(plan, inputs, ref snapshot, ref specialization, out failure);
+        }
+
         var key = KeyOf(drawKey, inputs.UserData, learned, rebase.Active);
         var found = TryFind(key, plan, inputs, rebase.Active, out var cached);
         Entry? stale = null;
@@ -1010,6 +1043,7 @@ public sealed partial class ResourceMaterializationCache
                     }
 
                     Hits++;
+                    rebase.NoteServed();
                     Interlocked.Increment(ref _totalHits);
                     snapshot = rebase.Apply(WithCurrentUserData(variant.Snapshot, inputs.UserData), inputs.UserData);
                     specialization = variant.Specialization;
@@ -1062,6 +1096,7 @@ public sealed partial class ResourceMaterializationCache
                     }
 
                     Hits++;
+                    rebase.NoteServed();
                     Interlocked.Increment(ref _totalHits);
                     snapshot = rebased;
                     specialization = refreshedFrom.Specialization;
@@ -1091,6 +1126,7 @@ public sealed partial class ResourceMaterializationCache
                     }
                     Store(key, refreshed);
                     TableRefreshes++;
+                    rebase.NoteServed();
                     Interlocked.Increment(ref _totalRefreshes);
                     snapshot = rebase.Apply(WithCurrentUserData(refreshed.Snapshot, inputs.UserData), inputs.UserData);
                     specialization = refreshed.Specialization;
@@ -1173,6 +1209,7 @@ public sealed partial class ResourceMaterializationCache
             }
 
             Store(key, built);
+            rebase.NoteStored();
             return true;
         }
         finally
