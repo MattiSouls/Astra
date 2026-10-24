@@ -418,6 +418,8 @@ internal static partial class VulkanVideoPresenter
             lock (_writeLock)
             {
                 var written = _memory.TryWrite(item.Address, item.Data);
+                // Applied in command order: the commands after the store may read it through device addresses.
+                SharpEmu.Libs.Gpu.Buffers.GuestOrderingPoints.Advance();
                 if (!ReferenceEquals(_pendingWrites.Peek(), item))
                 {
                     throw SubmissionScheduler.Fatal("The command stream stores ran out of order.");

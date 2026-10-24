@@ -1448,7 +1448,17 @@ internal static unsafe partial class VulkanVideoPresenter
                    !_imageCache.QueryRegion(address, size).ImageBytes;
         }
 
-        public bool TryCopyWordsOnHost(ulong destination, ulong source, ulong sourceWords, ulong words) =>
-            _bufferCache.TryCopyWordsOnHost(destination, source, sourceWords, words);
+        // A dispatch replaced by a copy in guest memory: the commands after it may read the words
+        // through device addresses.
+        public bool TryCopyWordsOnHost(ulong destination, ulong source, ulong sourceWords, ulong words)
+        {
+            var copied = _bufferCache.TryCopyWordsOnHost(destination, source, sourceWords, words);
+            if (copied)
+            {
+                GuestOrderingPoints.Advance();
+            }
+
+            return copied;
+        }
     }
 }

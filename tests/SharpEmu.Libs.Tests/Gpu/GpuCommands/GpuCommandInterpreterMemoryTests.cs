@@ -41,6 +41,16 @@ public sealed class GpuCommandInterpreterMemoryTests
             StreamRunner.Low(destination), StreamRunner.High(destination));
 
     [Fact]
+    public void WriteData_IsAnOrderingPointForDeviceAddressReads()
+    {
+        var runner = new StreamRunner();
+        // The stream starting is one point; the store is another.
+        var before = SharpEmu.Libs.Gpu.Buffers.GuestOrderingPoints.Generation;
+        runner.Run(WriteData(5u << 8, Label, 1));
+        Assert.True(SharpEmu.Libs.Gpu.Buffers.GuestOrderingPoints.Generation - before >= 2);
+    }
+
+    [Fact]
     public void WriteData_CopiesOrWritesOneAddress()
     {
         var runner = new StreamRunner();
