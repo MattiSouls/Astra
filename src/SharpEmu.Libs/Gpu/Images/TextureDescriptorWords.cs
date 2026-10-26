@@ -118,6 +118,9 @@ public readonly struct SamplerDescriptorWords
 
     public bool ForceUnnormalizedCoordinates => ((Fields[0] >> 15) & 0x1) == 1;
 
+    // Linearizes the RGB of a UNORM texture as if it were sRGB, before filtering.
+    public bool ForceDegamma => ((Fields[0] >> 20) & 0x1) == 1;
+
     public uint MinLod => (Fields[1] >> 0) & 0xFFF;
 
     public uint MaxLod => (Fields[1] >> 12) & 0xFFF;

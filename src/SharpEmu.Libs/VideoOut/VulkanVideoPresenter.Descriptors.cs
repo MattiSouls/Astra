@@ -114,7 +114,7 @@ internal static unsafe partial class VulkanVideoPresenter
             _ => TextureNumericClass.Float,
         };
 
-        private static ShaderImageShape ShapeOf(ImageResource image) => new(
+        private static ShaderImageShape ShapeOf(ImageResource image, bool degamma = false) => new(
             Volume: image.Dimension == ImageDimension.Dim3D,
             Arrayed: image.Cube || image.Dimension is ImageDimension.Dim1DArray or ImageDimension.Dim2DArray or ImageDimension.Dim2DMsaaArray,
             Cube: image.Cube,
@@ -126,7 +126,23 @@ internal static unsafe partial class VulkanVideoPresenter
             Multisampled: image.Dimension is ImageDimension.Dim2DMsaa or ImageDimension.Dim2DMsaaArray,
             DepthCompare: image.DepthCompare,
             Atomic: image.Atomic,
-            Atomic64: image.NumericClass == ImageNumericClass.Uint64);
+            Atomic64: image.NumericClass == ImageNumericClass.Uint64,
+            Degamma: degamma);
+
+        // Whether a sampler paired with the image asks for its texels to be linearized as sRGB.
+        private static bool SampledWithDegamma(ShaderResourceInfo info, uint[][] samplers, int image)
+        {
+            foreach (var pair in info.SampledPairs)
+            {
+                if (pair.Image == image && pair.Sampler < samplers.Length && samplers[pair.Sampler].Length != 0 &&
+                    new SamplerDescriptorWords(samplers[pair.Sampler]).ForceDegamma)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _tracedTextureBindings = new();
         // The last lookup of one image of one program. A draw binds the same descriptor as the
@@ -135,6 +151,7 @@ internal static unsafe partial class VulkanVideoPresenter
         private struct ImageBindingMemo
         {
             public uint[]? Words;
+            public bool Degamma;
             public ulong Generation;
             public TextureRequestResolution Resolution;
             public TextureRequestResolution OriginalResolution;
@@ -142,8 +159,8 @@ internal static unsafe partial class VulkanVideoPresenter
             public uint MetadataBaseLayer;
             public bool CompletesLookup;
 
-            public readonly bool Matches(uint[] words, ulong generation) =>
-                Words is not null && Generation == generation && words.AsSpan().SequenceEqual(Words);
+            public readonly bool Matches(uint[] words, bool degamma, ulong generation) =>
+                Words is not null && Degamma == degamma && Generation == generation && words.AsSpan().SequenceEqual(Words);
         }
 
         private Dictionary<ShaderProgramInfo, ImageBindingMemo[]>? _imageBindingMemos;
@@ -191,7 +208,7 @@ internal static unsafe partial class VulkanVideoPresenter
         }
 
         // Render-state discovery for one shader image; the view is acquired later with the draw.
-        private TextureResource ResolveImageBinding(ImageResource image, uint[] words, ShaderProgramInfo program, int index)
+        private TextureResource ResolveImageBinding(ImageResource image, uint[] words, ShaderProgramInfo program, int index, bool degamma = false)
         {
             ref var memo = ref ImageBindingMemoOf(program, index);
             if (words.Length < 4)
@@ -201,9 +218,9 @@ internal static unsafe partial class VulkanVideoPresenter
 
             var storage = image.ResourceClass == ShaderCompiler.Resources.ImageResourceClass.Storage;
             _ = BeginBatchedGuestCommands();
-            var originalResolution = memo.Matches(words, _imageCache.LookupGeneration)
+            var originalResolution = memo.Matches(words, degamma, _imageCache.LookupGeneration)
                 ? memo.OriginalResolution
-                : ImageRequestBuilders.Texture(words, ShapeOf(image), program.Hash, index);
+                : ImageRequestBuilders.Texture(words, ShapeOf(image, degamma), program.Hash, index);
             TraceImageLookup(image, words, program, index, originalResolution.Request);
             CompleteOverlappingPublications(originalResolution.Request.Description.Data.Address,
                 originalResolution.Request.Description.Data.Size, includeLabels: false);
@@ -211,7 +228,7 @@ internal static unsafe partial class VulkanVideoPresenter
             _ = BeginBatchedGuestCommands();
             TextureRequestResolution resolution;
             ResourceSlotIdentifier imageIdentifier;
-            if (memo.Matches(words, _imageCache.LookupGeneration) && _imageCache.TryTouchRemembered(memo.Found))
+            if (memo.Matches(words, degamma, _imageCache.LookupGeneration) && _imageCache.TryTouchRemembered(memo.Found))
             {
                 resolution = memo.Resolution;
                 imageIdentifier = memo.Found;
@@ -231,6 +248,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     ? new ImageBindingMemo
                     {
                         Words = (uint[])words.Clone(),
+                        Degamma = degamma,
                         Generation = _imageCache.LookupGeneration,
                         Resolution = resolution,
                         OriginalResolution = originalResolution,
@@ -437,7 +455,8 @@ internal static unsafe partial class VulkanVideoPresenter
                     ? CreateHostMovieTextureResource(movieCandidates![index], plane: 0)
                     : index == hostMovie.Chroma
                         ? CreateHostMovieTextureResource(movieCandidates![index], plane: 1)
-                        : ResolveImageBinding(info.Images[index], snapshot.Images[index], program, index);
+                        : ResolveImageBinding(info.Images[index], snapshot.Images[index], program, index,
+                            SampledWithDegamma(info, snapshot.Samplers, index));
             }
 
             descriptors.Samplers = Scratch.Samplers.Rent(info.Samplers.Count);
@@ -935,7 +954,8 @@ internal static unsafe partial class VulkanVideoPresenter
                         stale.Binding = default;
                     }
 
-                    images[index] = ResolveImageBinding(info.Images[index], asNull ? NullImageWords : snapshot.Images[index], program, index);
+                    images[index] = ResolveImageBinding(info.Images[index], asNull ? NullImageWords : snapshot.Images[index], program, index,
+                        !asNull && SampledWithDegamma(info, snapshot.Samplers, index));
                 });
             if (nulled != 0 && Interlocked.Increment(ref _nullRebindReports) <= 32)
             {

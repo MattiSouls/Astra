@@ -325,6 +325,11 @@ public static partial class ImageRequestBuilders
             ? Format.R64Uint
             : storage && (shape.Atomic || format == GuestPixelFormat.Bits32SInt) ? Format.R32Uint : ViewFormatRules.SrgbStorageFormat(pixelFormat);
         var viewFormat = storage && storageViewFormat != Format.Undefined ? storageViewFormat : pixelFormat;
+        // A degamma sampler reads UNORM texels as sRGB; an sRGB view decodes them before filtering.
+        var sampledViewFormat = shape.Degamma && !storage && !shaderConversion &&
+            ViewFormatRules.SrgbSampledFormat(pixelFormat) is var srgbView && srgbView != Format.Undefined
+            ? srgbView
+            : viewFormat;
         var blockBytes = GuestPixelFormats.BlockCompressedBytes(format);
         var description = ImageDescription.Create();
         description.Data = new GuestSpan(address, size.Size);
@@ -357,7 +362,7 @@ public static partial class ImageRequestBuilders
             PopulateTextureMipLayout(ref description);
         }
 
-        var view = TextureView(descriptor, shape, viewFormat, shaderConversion, viewLevels, description.Resources.Layers,
+        var view = TextureView(descriptor, shape, sampledViewFormat, shaderConversion, viewLevels, description.Resources.Layers,
             shaderHash, imageIndex);
         if (!shape.R128 && descriptor.MetadataCompress && !description.IsDepth && !shaderConversion &&
             tile == GuestTileMode.RenderTarget && levels == 1 && samples == 1 &&
@@ -385,7 +390,7 @@ public static partial class ImageRequestBuilders
             request.TraceWriteCompress = descriptor.WriteCompress;
             request.TraceTextureDescriptor = string.Join(",", ((ReadOnlySpan<uint>)descriptor.Fields).ToArray().Select(word => word.ToString("X8")));
         }
-        return new TextureRequestResolution(request, shaderConversion, pixelFormat, DestinationSwizzle(descriptor));
+        return new TextureRequestResolution(request, shaderConversion, storage ? pixelFormat : sampledViewFormat, DestinationSwizzle(descriptor));
     }
 
     // After the lookup: a stencil association redirects to its depth owner; the view rules run on the owner.

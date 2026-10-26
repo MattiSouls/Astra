@@ -266,6 +266,20 @@ public static class ViewFormatRules
         ToComponentSwizzle(DestinationSelect(swizzle, 2)),
         ToComponentSwizzle(DestinationSelect(swizzle, 3)));
 
+    // The sRGB view of a UNORM format, for a sampler that linearizes what it reads.
+    public static Format SrgbSampledFormat(Format imageFormat) => imageFormat switch
+    {
+        Format.R8G8B8A8Unorm => Format.R8G8B8A8Srgb,
+        Format.B8G8R8A8Unorm => Format.B8G8R8A8Srgb,
+        Format.A8B8G8R8UnormPack32 => Format.A8B8G8R8SrgbPack32,
+        Format.BC1RgbUnormBlock => Format.BC1RgbSrgbBlock,
+        Format.BC1RgbaUnormBlock => Format.BC1RgbaSrgbBlock,
+        Format.BC2UnormBlock => Format.BC2SrgbBlock,
+        Format.BC3UnormBlock => Format.BC3SrgbBlock,
+        Format.BC7UnormBlock => Format.BC7SrgbBlock,
+        _ => Format.Undefined,
+    };
+
     public static Format SrgbStorageFormat(Format imageFormat) => imageFormat switch
     {
         Format.R8G8B8A8Srgb or Format.B8G8R8A8Srgb => Format.R8G8B8A8Unorm,

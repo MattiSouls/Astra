@@ -67,6 +67,24 @@ public sealed class ImageRequestBuildersTests : IClassFixture<HeadlessVulkanFixt
     }
     private static readonly ShaderImageShape Sampled2D = new(false, false, false, false, TextureNumericClass.Float);
 
+    // A degamma sampler linearizes UNORM texels; the image keeps its format and only the view decodes.
+    [Fact]
+    public void DegammaSampledTexture_ViewsTheUnormImageAsSrgb()
+    {
+        var words = RegisterWords.Texture(Base, GuestPixelFormat.Bits8_8_8_8UNorm, 32, 32);
+        var ordinary = ImageRequestBuilders.Texture(words, Sampled2D);
+        var degamma = ImageRequestBuilders.Texture(words, Sampled2D with { Degamma = true });
+        var storage = ImageRequestBuilders.Texture(words, Sampled2D with { Storage = true, Degamma = true });
+        var halfFloat = ImageRequestBuilders.Texture(RegisterWords.Texture(Base, GuestPixelFormat.Bits16_16_16_16Float, 32, 32), Sampled2D with { Degamma = true });
+
+        Assert.Equal(Format.R8G8B8A8Unorm, ordinary.Request.View.Format);
+        Assert.Equal(Format.R8G8B8A8Unorm, degamma.Request.Description.PixelFormat);
+        Assert.Equal(Format.R8G8B8A8Srgb, degamma.Request.View.Format);
+        Assert.Equal(Format.R8G8B8A8Srgb, degamma.ViewFormat);
+        Assert.Equal(Format.R8G8B8A8Unorm, storage.Request.View.Format);
+        Assert.Equal(Format.R16G16B16A16Sfloat, halfFloat.Request.View.Format);
+    }
+
     [Theory]
     [InlineData(GuestPixelFormat.Bits16UNorm, Format.D16Unorm, Format.R16Unorm)]
     [InlineData(GuestPixelFormat.Bits32Float, Format.D32Sfloat, Format.R32Sfloat)]

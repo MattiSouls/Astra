@@ -161,7 +161,7 @@ public sealed class PresenterImageBindingTests : IClassFixture<HeadlessVulkanFix
             };
             var words = RegisterWords.Texture(address, guestFormat, 48, 24);
             words[3] = (words[3] & ~0xFFFu) | ViewFormatRules.PackDestinationSelect(4, 0, 0, 1);
-            var binding = presenter.InvokeMethod("ResolveImageBinding", resource, words, new ShaderProgramInfo(), 0)!;
+            var binding = presenter.InvokeMethod("ResolveImageBinding", resource, words, new ShaderProgramInfo(), 0, false)!;
             var identifier = (ResourceSlotIdentifier)GetFieldValue(binding, "ImageIdentifier");
             var request = (ImageRequest)GetFieldValue(binding, "Request");
             var image = harness.Images.GetImage(identifier);
@@ -198,16 +198,24 @@ public sealed class PresenterImageBindingTests : IClassFixture<HeadlessVulkanFix
             };
             var program = new ShaderProgramInfo();
             var words = RegisterWords.Texture(address, GuestPixelFormat.Bits32Float, 48, 24);
-            var first = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0)!, "ImageIdentifier");
-            var second = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0)!, "ImageIdentifier");
+            var first = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0, false)!, "ImageIdentifier");
+            var second = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0, false)!, "ImageIdentifier");
             Assert.Equal(first, second);
 
             // A removed image is not served again: the binding looks the descriptor up afresh.
             var generation = harness.Images.LookupGeneration;
             typeof(GuestImageCache).GetMethod("DeleteImage", InstanceMembers)!.Invoke(harness.Images, [first]);
             Assert.NotEqual(generation, harness.Images.LookupGeneration);
-            var third = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0)!, "ImageIdentifier");
+            var third = (ResourceSlotIdentifier)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0, false)!, "ImageIdentifier");
             Assert.True(harness.Images.TryGetImage(third, out var image) && image.Registered);
+
+            // A degamma sampler on the same descriptor needs the sRGB view, not the remembered one.
+            var color = RegisterWords.Texture(address, GuestPixelFormat.Bits8_8_8_8UNorm, 48, 24);
+            ImageRequest Bound(bool degamma) =>
+                (ImageRequest)GetFieldValue(presenter.InvokeMethod("ResolveImageBinding", resource, color, program, 1, degamma)!, "Request");
+            Assert.Equal(Format.R8G8B8A8Unorm, Bound(false).View.Format);
+            Assert.Equal(Format.R8G8B8A8Srgb, Bound(true).View.Format);
+            Assert.Equal(Format.R8G8B8A8Unorm, Bound(false).View.Format);
             presenter.RenderHost.ResetBindings();
         });
         harness.Shutdown();
@@ -253,7 +261,7 @@ public sealed class PresenterImageBindingTests : IClassFixture<HeadlessVulkanFix
             presenter.Run(() =>
             {
                 var found = (ResourceSlotIdentifier)GetFieldValue(
-                    presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0)!, "ImageIdentifier");
+                    presenter.InvokeMethod("ResolveImageBinding", resource, words, program, 0, false)!, "ImageIdentifier");
                 if (identifier.IsValid) Assert.Equal(identifier, found);
                 identifier = found;
                 presenter.RenderHost.ResetBindings();
