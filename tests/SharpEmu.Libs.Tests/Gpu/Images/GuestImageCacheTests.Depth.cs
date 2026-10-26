@@ -890,4 +890,38 @@ public sealed unsafe partial class GuestImageCacheTests
         Assert.All(Stencil(depthId), value => Assert.Equal(0, value));
         harness.Shutdown();
     }
+
+    // A compute pass can write a stencil plane as an 8-bit color image before any depth target
+    // names it; the depth target that then takes the plane holds what the GPU wrote, not guest memory.
+    [Fact]
+    public void GpuWrittenColorImageOfThePlane_BecomesTheDepthTargetsStencil()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        const ImageUsageFlags usage = ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit | ImageUsageFlags.DepthStencilAttachmentBit;
+        if (!_vulkan.DeviceInfo.TryGetImageFormatProperties(Format.D32SfloatS8Uint, ImageType.Type2D, ImageTiling.Optimal, usage, 0, out _)) return;
+        using var harness = new CacheHarness(_vulkan);
+        const uint width = 256;
+        const ulong depthSize = width * width * 4;
+        const ulong plane = width * width;
+        var address = harness.MapBacked(depthSize * 2, ReadWrite);
+        var stencilAddress = address + depthSize;
+        harness.Write(stencilAddress, Enumerable.Repeat((byte)0x5a, (int)plane).ToArray());
+
+        var color = LinearRequest(stencilAddress, plane, Format.R8Uint, GuestPixelFormat.Bits8UInt, GuestImageType.Color2D, new Extent3D(width, width, 1), 1, 1, 1);
+        var colorId = harness.Acquire(ref color);
+        harness.MarkGpuWritten(colorId);
+        // Guest memory goes stale under the GPU-owned image, as when a shader wrote it.
+        harness.Write(stencilAddress, Enumerable.Repeat((byte)0x11, (int)plane).ToArray());
+
+        var depth = LinearRequest(address, depthSize, Format.D32SfloatS8Uint, GuestPixelFormat.Bits32Float, GuestImageType.Color2D, new Extent3D(width, width, 1), 1, 4, 1);
+        depth.Description.TileMode = GuestTileMode.Depth;
+        depth = AsDepthTarget(depth, Format.D32SfloatS8Uint);
+        depth.Description.Stencil = new GuestSpan(stencilAddress, plane);
+        depth.View = depth.View with { Aspect = ImageAspectFlags.DepthBit | ImageAspectFlags.StencilBit };
+        var depthId = harness.Acquire(ref depth);
+
+        Assert.Equal(depthId, harness.Image(colorId).DepthOwner);
+        Assert.All(harness.ReadImageBytes(harness.Image(depthId), ImageAspectFlags.StencilBit)[..(int)plane], value => Assert.Equal(0x5a, value));
+        harness.Shutdown();
+    }
 }
